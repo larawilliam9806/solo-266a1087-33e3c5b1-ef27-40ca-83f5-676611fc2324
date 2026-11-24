@@ -127,4 +127,87 @@
   <p class="muted">暂无版本。</p>
   {% endif %}
 </div>
+
+<h2>⑤ 盲样复验</h2>
+<div class="card">
+  <h3 style="font-size:14px;margin:0 0 8px;">当前待复验样号（任一有效单报超差即列入）</h3>
+  {% if pending %}
+  <table>
+    <thead><tr><th>样号</th><th>触发单号（超差 ppm）</th></tr></thead>
+    <tbody>
+      {% for p in pending %}
+      <tr>
+        <td><code>{{ p.sample_no }}</code></td>
+        <td>
+          {% for t in p.triggers %}
+            <a href="{{ url_for('recheck_order_detail', order_id=t.order_id) }}">#{{ t.order_seq }}</a>
+            <span class="muted">（差 {{ t.diff_ppm }}）</span>{% if not loop.last %}；{% endif %}
+          {% endfor %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">当前无待复验样号。</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3 style="font-size:14px;margin:0 0 8px;">开盲样复验单</h3>
+  {% if assays %}
+  <form method="post" action="{{ url_for('add_recheck_order', hole_id=hole.id) }}">
+    <table>
+      <thead><tr><th style="width:40px;">勾选</th><th>样号</th><th>深度段(cm)</th><th>品位(ppm)</th></tr></thead>
+      <tbody>
+        {% for a in assays %}
+        <tr>
+          <td><input type="checkbox" name="sample_no" value="{{ a.sample_no }}"></td>
+          <td><code>{{ a.sample_no }}</code></td>
+          <td>[{{ a.start_cm }}, {{ a.end_cm }})</td>
+          <td>{{ a.grade_ppm }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    <div class="row" style="margin-top:10px;align-items:flex-end;">
+      <div style="flex:0 0 260px;">
+        <label class="muted">允许的最大差值（非负整数 ppm）</label>
+        <input type="text" name="max_diff_ppm" required placeholder="例如 10" inputmode="numeric">
+      </div>
+      <div style="flex:0 0 auto;">
+        <button type="submit">勾选样号并开单</button>
+      </div>
+    </div>
+    <p class="muted" style="margin-bottom:0;">开单后为每个样号生成两个全库唯一盲号，供打印贴签送检。</p>
+  </form>
+  {% else %}
+  <p class="muted">尚无生效化验，无法开单。</p>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3 style="font-size:14px;margin:0 0 8px;">复验单</h3>
+  {% if orders %}
+  <table>
+    <thead><tr><th>单号</th><th>开单时间</th><th>最大差值(ppm)</th><th>样号数</th><th>失效</th><th>回报</th><th>当前超差</th><th>操作</th></tr></thead>
+    <tbody>
+      {% for o in orders %}
+      <tr>
+        <td>#{{ o.order.seq }}</td>
+        <td>{{ o.order.created_at }}</td>
+        <td>{{ o.order.max_diff_ppm }}</td>
+        <td>{{ o.item_count }}</td>
+        <td>{% if o.invalidated_count %}<span class="tag incomplete">{{ o.invalidated_count }}</span>{% else %}0{% endif %}</td>
+        <td>{% if o.report %}第 {{ o.report.seq }} 版{% else %}<span class="muted">待上传</span>{% endif %}</td>
+        <td>{% if o.over_count %}<span class="tag diverged">{{ o.over_count }}</span>{% else %}0{% endif %}</td>
+        <td><a class="btn secondary" href="{{ url_for('recheck_order_detail', order_id=o.order.id) }}">查看 / 上传回报</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">暂无复验单。</p>
+  {% endif %}
+</div>
 {% endblock %}

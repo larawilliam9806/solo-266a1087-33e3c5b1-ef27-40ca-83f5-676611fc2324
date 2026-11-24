@@ -1,0 +1,100 @@
+{% extends "base.html" %}
+{% block title %}复验单 #{{ order.seq }} - {{ hole.code }} - 岩芯化验底表{% endblock %}
+{% block body %}
+<h1>复验单 #{{ order.seq }}
+  <span class="muted">钻孔 {{ hole.code }}{% if hole.name %}（{{ hole.name }}）{% endif %}</span>
+</h1>
+<p class="muted">
+  开单时间：{{ order.created_at }} · 允许最大差值：<strong>{{ order.max_diff_ppm }} ppm</strong>
+  · 本单 {{ items|length }} 个样号
+</p>
+
+<div class="card">
+  <div class="row">
+    <div style="flex:1;">
+      <a class="btn secondary" href="{{ url_for('hole_detail', hole_id=hole.id) }}">返回钻孔页</a>
+    </div>
+    <form method="post" action="{{ url_for('upload_recheck_report', order_id=order.id) }}"
+          enctype="multipart/form-data" style="flex:3;">
+      <label class="muted">整份回报 CSV（两列：盲号、品位ppm；只收本单盲号，每号恰好一行；重复上传即整份订正）</label>
+      <div class="row" style="margin-top:6px;">
+        <input type="file" name="report_csv" accept=".csv,text/csv" required style="flex:2;">
+        <button type="submit" style="flex:0 0 auto;">上传回报</button>
+        <a class="btn secondary" style="flex:0 0 auto;" href="{{ url_for('report_template') }}">回报模板</a>
+      </div>
+    </form>
+  </div>
+  <p class="muted" style="margin-bottom:0;">
+    回报入库为不可变版本：成功即整份替换，失败整体回滚并沿用上次回报与核查结果。
+    {% if selected_report %}
+      当前展示回报：第 {{ selected_report.seq }} 版（{{ selected_report.created_at }}）{% if selected_report.status == 'effective' %} ★ 生效{% else %}（历史版）{% endif %}
+    {% else %}
+      尚无回报。
+    {% endif %}
+  </p>
+</div>
+
+{% if reports|length > 1 %}
+<h2>回报版本</h2>
+<div class="card">
+  <table>
+    <thead><tr><th>版本</th><th>状态</th><th>生成时间</th><th>操作</th></tr></thead>
+    <tbody>
+      {% for rp in reports %}
+      <tr>
+        <td>#{{ rp.seq }}{% if selected_report and rp.id == selected_report.id %} ★{% endif %}</td>
+        <td>{% if rp.status == 'effective' %}<span class="tag ok">生效</span>{% else %}<span class="muted">已被订正</span>{% endif %}</td>
+        <td>{{ rp.created_at }}</td>
+        <td><a class="btn secondary" href="{{ url_for('recheck_order_detail', order_id=order.id, report_id=rp.id) }}">查看</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+
+<h2>盲号与核查结果</h2>
+<div class="card">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th><th>样号</th><th>开单时品位(ppm)</th>
+        <th>盲号 A</th><th>读数 A</th>
+        <th>盲号 B</th><th>读数 B</th>
+        <th>绝对差(ppm)</th><th>判断</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in items %}
+      {% set it = row.item %}
+      <tr>
+        <td>{{ it.seq }}</td>
+        <td><code>{{ it.sample_no }}</code></td>
+        <td>{{ it.grade_ppm }}</td>
+        {% for c in row.codes %}
+          <td><code>{{ c.code }}</code></td>
+          <td>{% if c.grade is none %}<span class="muted">—</span>{% else %}{{ c.grade }}{% endif %}</td>
+        {% endfor %}
+        <td>{% if row.diff_ppm is none %}—{% else %}<strong>{{ row.diff_ppm }}</strong>{% endif %}</td>
+        <td>
+          {% if it.invalidated %}
+            <span class="tag incomplete">判断失效</span>
+            <div class="muted">{{ it.invalid_reason }}{% if it.invalidated_at %}（{{ it.invalidated_at }}）{% endif %}</div>
+          {% elif selected_report is none %}
+            <span class="muted">待回报</span>
+          {% elif row.over_limit %}
+            <span class="tag diverged">超差</span>
+          {% else %}
+            <span class="tag ok">限值内</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted" style="margin-bottom:0;">
+    判断失效：开单后该样号曾从正式化验中消失或记录发生变化，此单对该样号的超差判断不再成立；
+    即便之后改回原值也不恢复，但仍可在此查询该单已入库回报。
+  </p>
+</div>
+{% endblock %}

@@ -9,8 +9,15 @@ from flask import (
     Flask, abort, flash, redirect, render_template, request, send_file, url_for,
 )
 
-from .csvio import CsvError, assay_template_csv, export_supply_csv, parse_assay_csv
+from .csvio import (
+    CsvError, assay_template_csv, export_supply_csv, parse_assay_csv,
+    parse_report_csv, report_template_csv,
+)
 from .db import get_db, init_app
+from .recheck import (
+    RecheckError, create_order, get_order, list_orders, pending_rechecks,
+    upload_report,
+)
 from .services import ServiceError, create_hole, list_holes, list_segments
 from .services import list_results, list_versions, latest_assays, latest_version
 from .services import recompute, replace_segments, upload_assays
@@ -67,6 +74,8 @@ def create_app(config: dict | None = None) -> Flask:
         results = list_results(version["id"]) if version else []
         assays = latest_assays(hole_id)
         versions = list_versions(hole_id)
+        orders = list_orders(hole_id)
+        pending = pending_rechecks(hole_id)
         # 把样号 JSON 解析成列表供模板展示。
         enriched = []
         for r in results:
@@ -82,7 +91,82 @@ def create_app(config: dict | None = None) -> Flask:
             results=enriched,
             assays=assays,
             versions=versions,
+            orders=orders,
+            pending=pending,
         )
+
+    # ------------------------------------------------------------ 盲样复验
+    @app.route("/holes/<int:hole_id>/rechecks", methods=["POST"])
+    def add_recheck_order(hole_id: int):
+        sample_nos = request.form.getlist("sample_no")
+        raw_max = request.form.get("max_diff_ppm", "").strip()
+        try:
+            try:
+                max_diff = int(raw_max)
+            except ValueError:
+                raise RecheckError("允许的最大差值必须是非负整数 ppm")
+            order_id = create_order(hole_id, sample_nos, max_diff)
+            created = get_order(order_id)
+            flash(
+                f"复验单 #{created['order']['seq']} 已开出（{len(created['items'])} 个样号），"
+                "盲号见下方单据；请打印贴签送检。",
+                "ok",
+            )
+            return redirect(url_for("recheck_order_detail", order_id=order_id))
+        except RecheckError as exc:
+            flash(f"开单失败：{exc}", "err")
+            return redirect(url_for("hole_detail", hole_id=hole_id))
+
+    @app.route("/rechecks/<int:order_id>")
+    def recheck_order_detail(order_id: int):
+        raw_report = request.args.get("report_id")
+        report_id = None
+        if raw_report is not None:
+            try:
+                report_id = int(raw_report)
+            except ValueError:
+                abort(400)
+        try:
+            ctx = get_order(order_id, report_id)
+        except RecheckError as exc:
+            flash(str(exc), "err")
+            ctx = get_order(order_id)
+        if ctx is None:
+            abort(404)
+        # 上传失败时保留上次已入库回报与核查结果的展示（上下文不变）。
+        return render_template("recheck_order.html", **ctx)
+
+    @app.route("/rechecks/<int:order_id>/report", methods=["POST"])
+    def upload_recheck_report(order_id: int):
+        f = request.files.get("report_csv")
+        if f is None or not f.filename:
+            flash("请选择回报 CSV 文件", "err")
+            return redirect(url_for("recheck_order_detail", order_id=order_id))
+        try:
+            text = f.read().decode("utf-8-sig")
+            readings = parse_report_csv(text)
+            counts = upload_report(order_id, readings)
+            if counts["invalidated"]:
+                flash(
+                    "回报已入库（版本 #{report_seq}）：本单有 {invalidated} 个样号已因"
+                    "正式化验变化失效，不列入待复验名单。".format(**counts),
+                    "ok",
+                )
+            elif counts["over_limit"]:
+                flash(
+                    "回报已入库（版本 #{report_seq}）：{over_limit} 个样号绝对差超过"
+                    "限值，已列入待复验名单。".format(**counts),
+                    "ok",
+                )
+            else:
+                flash(
+                    "回报已入库（版本 #{report_seq}）：全部样号在限值内。".format(**counts),
+                    "ok",
+                )
+        except (CsvError, RecheckError, UnicodeDecodeError) as exc:
+            # 失败沿用上一次已入库回报与核查结果。
+            flash(f"回报上传失败，沿用上次回报：{exc}", "err")
+        return redirect(url_for("recheck_order_detail", order_id=order_id))
 
     # ------------------------------------------------------------ 统计段
     @app.route("/holes/<int:hole_id>/segments", methods=["POST"])
@@ -188,6 +272,16 @@ def create_app(config: dict | None = None) -> Flask:
             mimetype="text/csv; charset=utf-8",
             as_attachment=True,
             download_name="assay_template.csv",
+        )
+
+    @app.route("/report_template.csv")
+    def report_template():
+        buf = io.BytesIO(report_template_csv().encode("utf-8-sig"))
+        return send_file(
+            buf,
+            mimetype="text/csv; charset=utf-8",
+            as_attachment=True,
+            download_name="recheck_report_template.csv",
         )
 
     @app.route("/healthz")

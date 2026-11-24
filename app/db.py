@@ -101,6 +101,84 @@ CREATE TABLE IF NOT EXISTS segment_result (
 
 CREATE INDEX IF NOT EXISTS idx_assay_row_version ON assay_row(version_id);
 CREATE INDEX IF NOT EXISTS idx_segment_result_version ON segment_result(version_id);
+
+-- ---------------------------------------------------------------- 盲样复验
+-- 一张复验单对应钻孔页上一次勾选的若干「当前样号」；每个样号在开单时
+-- 固化成一行 recheck_item（含开单时的化验记录快照），并生成两个全库唯一
+-- 的盲号（blind_code）。正式化验换交后，若样号消失或记录发生变化，该行
+-- 被永久标记 invalidated；之后即便改回原值也不恢复。
+CREATE TABLE IF NOT EXISTS recheck_order (
+    id INTEGER PRIMARY KEY,
+    hole_id INTEGER NOT NULL REFERENCES hole(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    max_diff_ppm INTEGER NOT NULL CHECK (max_diff_ppm >= 0),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(hole_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS recheck_item (
+    id INTEGER PRIMARY KEY,
+    order_id INTEGER NOT NULL REFERENCES recheck_order(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    sample_no TEXT NOT NULL,
+    -- 开单时的正式化验快照
+    start_cm INTEGER NOT NULL,
+    end_cm INTEGER NOT NULL,
+    grade_ppm INTEGER NOT NULL,
+    recheck INTEGER NOT NULL CHECK (recheck IN (0, 1)),
+    invalidated INTEGER NOT NULL DEFAULT 0 CHECK (invalidated IN (0, 1)),
+    invalidated_at TEXT,
+    invalid_reason TEXT,
+    UNIQUE(order_id, sample_no),
+    UNIQUE(order_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS blind_code (
+    id INTEGER PRIMARY KEY,
+    order_item_id INTEGER NOT NULL REFERENCES recheck_item(id) ON DELETE CASCADE,
+    slot INTEGER NOT NULL CHECK (slot IN (1, 2)),
+    code TEXT NOT NULL UNIQUE,
+    UNIQUE(order_item_id, slot)
+);
+
+-- 回报不可变快照：每次上传（含整份订正）生成一版；上一版标记 superseded
+-- 但完整保留，失败的上传不产生任何版本，旧的 effective 回报继续可用。
+CREATE TABLE IF NOT EXISTS recheck_report (
+    id INTEGER PRIMARY KEY,
+    order_id INTEGER NOT NULL REFERENCES recheck_order(id) ON DELETE CASCADE,
+    seq INTEGER NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('effective', 'superseded')),
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(order_id, seq)
+);
+
+CREATE TABLE IF NOT EXISTS recheck_reading (
+    id INTEGER PRIMARY KEY,
+    report_id INTEGER NOT NULL REFERENCES recheck_report(id) ON DELETE CASCADE,
+    blind_code_id INTEGER NOT NULL REFERENCES blind_code(id) ON DELETE CASCADE,
+    grade_ppm INTEGER NOT NULL CHECK (grade_ppm >= 0),
+    UNIQUE(report_id, blind_code_id)
+);
+
+CREATE TABLE IF NOT EXISTS recheck_result (
+    id INTEGER PRIMARY KEY,
+    report_id INTEGER NOT NULL REFERENCES recheck_report(id) ON DELETE CASCADE,
+    order_item_id INTEGER NOT NULL REFERENCES recheck_item(id) ON DELETE CASCADE,
+    diff_ppm INTEGER NOT NULL CHECK (diff_ppm >= 0),
+    over_limit INTEGER NOT NULL CHECK (over_limit IN (0, 1)),
+    UNIQUE(report_id, order_item_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_recheck_order_hole ON recheck_order(hole_id);
+CREATE INDEX IF NOT EXISTS idx_recheck_item_order ON recheck_item(order_id);
+CREATE INDEX IF NOT EXISTS idx_recheck_item_sample ON recheck_item(sample_no);
+CREATE INDEX IF NOT EXISTS idx_blind_code_item ON blind_code(order_item_id);
+CREATE INDEX IF NOT EXISTS idx_recheck_report_order ON recheck_report(order_id);
+CREATE INDEX IF NOT EXISTS idx_recheck_reading_report ON recheck_reading(report_id);
+CREATE INDEX IF NOT EXISTS idx_recheck_result_report ON recheck_result(report_id);
+-- 一张单最多一版 effective 回报。
+CREATE UNIQUE INDEX IF NOT EXISTS uq_recheck_report_effective
+    ON recheck_report(order_id) WHERE status = 'effective';
 """
 
 

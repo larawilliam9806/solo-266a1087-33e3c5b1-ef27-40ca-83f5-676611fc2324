@@ -13,6 +13,7 @@ from typing import List, Optional, Sequence, Tuple
 
 from .csvio import CsvError
 from .db import get_db
+from .recheck import invalidate_for_new_version
 from .tiling import Assay, SegmentVerdict, dumps_samples, evaluate_all
 
 
@@ -221,6 +222,9 @@ def _persist_version(
         "UPDATE hole SET effective_version_id = ? WHERE id = ?",
         (version_id, hole_id),
     )
+    # 新版本已就位：样号消失或记录变化 => 相关复验判断永久失效
+    # （同一事务内完成，改回原值也不恢复）。
+    invalidate_for_new_version(conn, hole_id)
     return version_id
 
 

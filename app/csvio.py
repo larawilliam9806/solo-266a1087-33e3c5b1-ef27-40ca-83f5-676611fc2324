@@ -137,6 +137,88 @@ def assay_template_csv() -> str:
     return buf.getvalue()
 
 
+# ---------------------------------------------------------------- 盲样复验回报
+
+REPORT_HEADER_ALIASES = {
+    "盲号": "盲号",
+    "blind_code": "盲号",
+    "blind": "盲号",
+    "code": "盲号",
+    "盲样号": "盲号",
+    "品位ppm": "品位ppm",
+    "品位": "品位ppm",
+    "grade_ppm": "品位ppm",
+    "grade": "品位ppm",
+    "ppm": "品位ppm",
+}
+REPORT_CANONICAL = ["盲号", "品位ppm"]
+
+
+def parse_report_csv(text: str) -> dict:
+    """解析复验回报 CSV：两列「盲号, 品位ppm」。
+
+    返回 {盲号: 整数品位}。只做格式校验；「只收本单盲号」「每号恰好一行」
+    由入库服务针对具体单校验（本函数先拒绝文件内重复盲号）。
+    """
+    if not text.strip():
+        raise CsvError("CSV 内容为空")
+    reader = csv.reader(io.StringIO(text.lstrip("﻿")))
+    try:
+        header = next(reader)
+    except StopIteration:
+        raise CsvError("CSV 缺少表头行")
+
+    header = [h.strip() for h in header]
+    col_index = {}
+    for idx, name in enumerate(header):
+        key = name.lower().replace(" ", "")
+        canon = (
+            REPORT_HEADER_ALIASES.get(key)
+            or REPORT_HEADER_ALIASES.get(name)
+            or REPORT_HEADER_ALIASES.get(name.strip().lower())
+        )
+        if canon and canon not in col_index:
+            col_index[canon] = idx
+    missing = [c for c in REPORT_CANONICAL if c not in col_index]
+    if missing:
+        raise CsvError(
+            f"回报 CSV 缺少必需列：{'、'.join(missing)}（只需两列：盲号、品位ppm）；"
+            f"实际表头：{'、'.join(header)}"
+        )
+
+    readings: dict = {}
+    for row_no, row in enumerate(reader, start=2):
+        if not any((c or "").strip() for c in row):
+            continue
+        if len(row) < len(header):
+            row = row + [""] * (len(header) - len(row))
+        code = row[col_index["盲号"]].strip()
+        if not code:
+            raise CsvError(f"第 {row_no} 行：盲号不能为空")
+        if code in readings:
+            raise CsvError(f"第 {row_no} 行：盲号 {code} 重复，每个盲号必须恰好一行")
+        grade_raw = row[col_index["品位ppm"]].strip()
+        try:
+            grade = int(grade_raw)
+        except ValueError:
+            raise CsvError(f"第 {row_no} 行：品位必须是非负整数 ppm，收到 {grade_raw!r}")
+        if grade < 0:
+            raise CsvError(f"第 {row_no} 行：品位必须是非负整数 ppm，收到 {grade_raw!r}")
+        readings[code] = grade
+
+    if not readings:
+        raise CsvError("CSV 中没有任何回报数据行")
+    return readings
+
+
+def report_template_csv() -> str:
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(REPORT_CANONICAL)
+    w.writerow(["BXXXXXXXXXXXXXXXX", 0])
+    return buf.getvalue()
+
+
 def _fmt_grade(num: int, den: int) -> str:
     """精确品位展示：整除输出整数；分母只含 2/5 因子时做整数长除法得有限
     小数；否则保留 num/den 分数形式。全程不使用浮点。"""
